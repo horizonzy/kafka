@@ -117,8 +117,6 @@ public class ProducerPerformance {
             long transactionStartTime = 0;
             List<IndexedRecord> avroRecords = createAvroRecord((int) numRecords);
 
-            byte[] serializeData = serialize(avroRecords.get(0));
-            int payloadSize = serializeData.length + 5;
             for (long i = 0; i < numRecords; i++) {
 
 
@@ -130,7 +128,7 @@ public class ProducerPerformance {
                 record = new ProducerRecord<>(topicName, avroRecords.get((int) i));
 
                 long sendStartMs = System.currentTimeMillis();
-                cb = new PerfCallback(sendStartMs, payloadSize, stats);
+                cb = new PerfCallback(sendStartMs, PAYLOAD_SIZE, stats);
                 producer.send(record, cb);
 
                 currentTransactionSize++;
@@ -204,6 +202,8 @@ public class ProducerPerformance {
         + "  ]\n"
         + "}";
 
+    private static final int PAYLOAD_SIZE = 105;;
+
     private static final Schema FIXED_SCHEMA = new Schema.Parser().parse(USER_SCHEMA);
 
 
@@ -248,18 +248,6 @@ public class ProducerPerformance {
             records.add(record);
         }
         return records;
-    }
-
-    @SuppressWarnings("unchecked")
-    public byte[] serialize(Object value) throws Exception {
-        ByteArrayOutputStream out = new ByteArrayOutputStream();
-        BinaryEncoder encoder = EncoderFactory.get().directBinaryEncoder(out, null);
-        DatumWriter writer =  AvroSchemaUtils.getDatumWriter(value, FIXED_SCHEMA, false);
-        writer.write(value, encoder);
-        encoder.flush();
-        byte[] bytes = out.toByteArray();
-        out.close();
-        return bytes;
     }
 
     KafkaProducer<Integer, Object> createKafkaProducer(Properties props, String schemaRegistry) {
@@ -350,7 +338,7 @@ public class ProducerPerformance {
 
         parser.addArgument("--registry")
             .action(store())
-            .required(false)
+            .required(true)
             .type(String.class)
             .metavar("REGISTRY")
             .help("The schema registry");
