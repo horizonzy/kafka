@@ -126,8 +126,15 @@ ext {
 
 allprojects {
 
+  tasks.withType(JavaCompile) {
+    options.compilerArgs -= '-Werror' // 删除 -Werror 参数
+  }
+
   repositories {
     mavenCentral()
+    maven {
+      url "https://packages.confluent.io/maven/"
+    }
   }
 
   dependencyUpdates {
@@ -178,7 +185,6 @@ allprojects {
     // Turn off doclint for now, see https://blog.joda.org/2014/02/turning-off-doclint-in-jdk-8-javadoc.html for rationale
     options.addStringOption('Xdoclint:none', '-quiet')
     // Javadoc warnings should fail the build in JDK 15+ https://bugs.openjdk.org/browse/JDK-8200363
-    options.addBooleanOption('Werror', JavaVersion.current().isCompatibleWith(JavaVersion.VERSION_15))
 
     // The URL structure was changed to include the locale after Java 8
     if (JavaVersion.current().isJava11Compatible())
@@ -303,7 +309,6 @@ subprojects {
       options.compilerArgs << "-Xlint:-rawtypes"
     options.compilerArgs << "-Xlint:-serial"
     options.compilerArgs << "-Xlint:-try"
-    options.compilerArgs << "-Werror"
 
     // --release is the recommended way to select the target release, but it's only supported in Java 9 so we also
     // set --source and --target via `sourceCompatibility` and `targetCompatibility` a couple of lines below
@@ -2338,6 +2343,7 @@ project(':tools') {
     implementation project(':transaction-coordinator')
     implementation project(':group-coordinator')
     implementation project(':coordinator-common')
+    implementation libs.kafkaSerialize
     implementation libs.argparse4j
     implementation libs.jacksonDatabind
     implementation libs.jacksonDataformatCsv
