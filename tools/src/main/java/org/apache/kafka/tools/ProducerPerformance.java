@@ -19,10 +19,8 @@ package org.apache.kafka.tools;
 import static net.sourceforge.argparse4j.impl.Arguments.store;
 import static net.sourceforge.argparse4j.impl.Arguments.storeTrue;
 
-import io.confluent.kafka.schemaregistry.avro.AvroSchemaUtils;
 import io.confluent.kafka.serializers.KafkaAvroSerializer;
 import io.confluent.kafka.serializers.KafkaAvroSerializerConfig;
-import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
@@ -46,9 +44,6 @@ import org.apache.avro.Schema;
 import org.apache.avro.generic.GenericData;
 import org.apache.avro.generic.GenericRecord;
 import org.apache.avro.generic.IndexedRecord;
-import org.apache.avro.io.BinaryEncoder;
-import org.apache.avro.io.DatumWriter;
-import org.apache.avro.io.EncoderFactory;
 import org.apache.kafka.clients.producer.Callback;
 import org.apache.kafka.clients.producer.KafkaProducer;
 import org.apache.kafka.clients.producer.ProducerConfig;
@@ -115,8 +110,6 @@ public class ProducerPerformance {
 
             int currentTransactionSize = 0;
             long transactionStartTime = 0;
-            List<IndexedRecord> avroRecords = createAvroRecord((int) numRecords);
-
             for (long i = 0; i < numRecords; i++) {
 
 
@@ -124,13 +117,15 @@ public class ProducerPerformance {
                     producer.beginTransaction();
                     transactionStartTime = System.currentTimeMillis();
                 }
-
-                record = new ProducerRecord<>(topicName, avroRecords.get((int) i));
+                IndexedRecord avroRecord = createAvroRecord();
+                record = new ProducerRecord<>(topicName, avroRecord);
 
                 long sendStartMs = System.currentTimeMillis();
                 cb = new PerfCallback(sendStartMs, PAYLOAD_SIZE, stats);
                 producer.send(record, cb);
-
+                if (i > 0 && i % 10000 == 0) {
+                    producer.flush();
+                }
                 currentTransactionSize++;
                 if (transactionsEnabled && transactionDurationMs <= (sendStartMs - transactionStartTime)) {
                     producer.commitTransaction();
@@ -207,47 +202,40 @@ public class ProducerPerformance {
     private static final Schema FIXED_SCHEMA = new Schema.Parser().parse(USER_SCHEMA);
 
 
-    private List<IndexedRecord> createAvroRecord(int numberOfMessages) {
-
-        List<IndexedRecord> records = new ArrayList<>(numberOfMessages);
+    private IndexedRecord createAvroRecord() {
         Random random = new Random();
-        for (int i = 0; i < numberOfMessages; i++) {
-            GenericRecord record = new GenericData.Record(FIXED_SCHEMA);
+        GenericRecord record = new GenericData.Record(FIXED_SCHEMA);
 
-            // Randomly populate fields with different Avro types
-            record.put("stringField", "string_" + i);
-            record.put("intField", random.nextInt());
-            record.put("longField", random.nextLong());
-            record.put("floatField", random.nextFloat());
-            record.put("doubleField", random.nextDouble());
-            record.put("booleanField", random.nextBoolean());
-//            record.put("enumField", new GenericData.EnumSymbol(schema.getField("enumField").schema(),
-//                random.nextBoolean() ? "FOO" : "BAR"));
-            record.put("bytesField", ByteBuffer.wrap(new byte[]{(byte) random.nextInt(256),
-                (byte) random.nextInt(256)}));
-            record.put("arrayField", Arrays.asList("array_" + random.nextInt(100),
-                "array_" + random.nextInt(100)));
+        // Randomly populate fields with different Avro types
+        record.put("stringField", "string_" + random.nextInt());
+        record.put("intField", random.nextInt());
+        record.put("longField", random.nextLong());
+        record.put("floatField", random.nextFloat());
+        record.put("doubleField", random.nextDouble());
+        record.put("booleanField", random.nextBoolean());
+//        record.put("enumField", new GenericData.EnumSymbol(schema.getField("enumField").schema(),
+//            random.nextBoolean() ? "FOO" : "BAR"));
+        record.put("bytesField", ByteBuffer.wrap(new byte[]{(byte) random.nextInt(256),
+            (byte) random.nextInt(256)}));
+        record.put("arrayField", Arrays.asList("array_" + random.nextInt(100),
+            "array_" + random.nextInt(100)));
 
-            Map<String, Integer> mapField = new HashMap<>();
-            mapField.put("key_" + random.nextInt(100), random.nextInt());
-            mapField.put("key_" + random.nextInt(100), random.nextInt());
-            record.put("mapField", mapField);
+        Map<String, Integer> mapField = new HashMap<>();
+        mapField.put("key_" + random.nextInt(100), random.nextInt());
+        mapField.put("key_" + random.nextInt(100), random.nextInt());
+        record.put("mapField", mapField);
 
-            GenericRecord nestedRecord = new GenericData.Record(FIXED_SCHEMA.getField("recordField").schema());
-            nestedRecord.put("nestedField", "nested_" + random.nextInt(10000));
-            record.put("recordField", nestedRecord);
+        GenericRecord nestedRecord = new GenericData.Record(FIXED_SCHEMA.getField("recordField").schema());
+        nestedRecord.put("nestedField", "nested_" + random.nextInt(10000));
+        record.put("recordField", nestedRecord);
 
-            // Union field with a mix of string and int
-            if (random.nextBoolean()) {
-                record.put("unionField", "union_" + random.nextInt(10000));
-            } else {
-                record.put("unionField", random.nextInt(10000));
-            }
-
-            // Append the record to the list
-            records.add(record);
+        // Union field with a mix of string and int
+        if (random.nextBoolean()) {
+            record.put("unionField", "union_" + random.nextInt(10000));
+        } else {
+            record.put("unionField", random.nextInt(10000));
         }
-        return records;
+        return record;
     }
 
     KafkaProducer<Integer, Object> createKafkaProducer(Properties props, String schemaRegistry) {

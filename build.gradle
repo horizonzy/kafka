@@ -2105,6 +2105,12 @@ project(':tools') {
     archivesName = "kafka-tools"
   }
 
+  apply plugin: "com.github.johnrengelman.shadow"
+
+  shadowJar {
+    archiveBaseName = 'kafka-tools'
+  }
+
   dependencies {
     implementation project(':clients')
     implementation project(':storage')
