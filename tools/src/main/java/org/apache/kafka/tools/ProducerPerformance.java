@@ -19,31 +19,45 @@ package org.apache.kafka.tools;
 import static net.sourceforge.argparse4j.impl.Arguments.store;
 import static net.sourceforge.argparse4j.impl.Arguments.storeTrue;
 
+import io.confluent.kafka.schemaregistry.avro.AvroSchemaUtils;
+import io.confluent.kafka.serializers.KafkaAvroSerializer;
+import io.confluent.kafka.serializers.KafkaAvroSerializerConfig;
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
-import java.util.List;
-import java.util.Properties;
 import java.util.Arrays;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Properties;
+import java.util.Random;
 import java.util.SplittableRandom;
-
+import net.sourceforge.argparse4j.ArgumentParsers;
+import net.sourceforge.argparse4j.inf.ArgumentParser;
+import net.sourceforge.argparse4j.inf.ArgumentParserException;
 import net.sourceforge.argparse4j.inf.MutuallyExclusiveGroup;
+import net.sourceforge.argparse4j.inf.Namespace;
+import org.apache.avro.Schema;
+import org.apache.avro.generic.GenericData;
+import org.apache.avro.generic.GenericRecord;
+import org.apache.avro.generic.IndexedRecord;
+import org.apache.avro.io.BinaryEncoder;
+import org.apache.avro.io.DatumWriter;
+import org.apache.avro.io.EncoderFactory;
 import org.apache.kafka.clients.producer.Callback;
 import org.apache.kafka.clients.producer.KafkaProducer;
 import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.clients.producer.RecordMetadata;
-
-import net.sourceforge.argparse4j.ArgumentParsers;
-import net.sourceforge.argparse4j.inf.ArgumentParser;
-import net.sourceforge.argparse4j.inf.ArgumentParserException;
-import net.sourceforge.argparse4j.inf.Namespace;
+import org.apache.kafka.common.serialization.IntegerSerializer;
 import org.apache.kafka.common.utils.Exit;
-import org.apache.kafka.server.util.ThroughputThrottler;
 import org.apache.kafka.common.utils.Utils;
+import org.apache.kafka.server.util.ThroughputThrottler;
 
 public class ProducerPerformance {
 
@@ -52,7 +66,7 @@ public class ProducerPerformance {
         perf.start(args);
     }
     
-    void start(String[] args) throws IOException {
+    void start(String[] args) throws Exception {
         ArgumentParser parser = argParser();
 
         try {
@@ -60,6 +74,7 @@ public class ProducerPerformance {
 
             /* parse args */
             String topicName = res.getString("topic");
+            String schemaRegistry = res.getString("registry");
             long numRecords = res.getLong("numRecords");
             Integer recordSize = res.getInt("recordSize");
             int throughput = res.getInt("throughput");
@@ -78,23 +93,21 @@ public class ProducerPerformance {
                 throw new ArgumentParserException("Either --producer-props or --producer.config must be specified.", parser);
             }
 
-            List<byte[]> payloadByteList = readPayloadFile(payloadFilePath, payloadDelimiter);
-
             Properties props = readProps(producerProps, producerConfig, transactionalId, transactionsEnabled);
 
-            KafkaProducer<byte[], byte[]> producer = createKafkaProducer(props);
+            KafkaProducer<Integer, Object> producer = createKafkaProducer(props, schemaRegistry);
 
             if (transactionsEnabled)
                 producer.initTransactions();
 
             /* setup perf test */
-            byte[] payload = null;
-            if (recordSize != null) {
-                payload = new byte[recordSize];
-            }
+//            byte[] payload = null;
+//            if (recordSize != null) {
+//                payload = new byte[recordSize];
+//            }
             // not threadsafe, do not share with other threads
             SplittableRandom random = new SplittableRandom(0);
-            ProducerRecord<byte[], byte[]> record;
+            ProducerRecord<Integer, Object> record;
             stats = new Stats(numRecords, 5000);
             long startMs = System.currentTimeMillis();
 
@@ -102,19 +115,22 @@ public class ProducerPerformance {
 
             int currentTransactionSize = 0;
             long transactionStartTime = 0;
+            List<IndexedRecord> avroRecords = createAvroRecord((int) numRecords);
+
+            byte[] serializeData = serialize(avroRecords.get(0));
+            int payloadSize = serializeData.length + 5;
             for (long i = 0; i < numRecords; i++) {
 
-                payload = generateRandomPayload(recordSize, payloadByteList, payload, random);
 
                 if (transactionsEnabled && currentTransactionSize == 0) {
                     producer.beginTransaction();
                     transactionStartTime = System.currentTimeMillis();
                 }
 
-                record = new ProducerRecord<>(topicName, payload);
+                record = new ProducerRecord<>(topicName, avroRecords.get((int) i));
 
                 long sendStartMs = System.currentTimeMillis();
-                cb = new PerfCallback(sendStartMs, payload.length, stats);
+                cb = new PerfCallback(sendStartMs, payloadSize, stats);
                 producer.send(record, cb);
 
                 currentTransactionSize++;
@@ -158,10 +174,98 @@ public class ProducerPerformance {
                 Exit.exit(1);
             }
         }
-
     }
 
-    KafkaProducer<byte[], byte[]> createKafkaProducer(Properties props) {
+    // fixed schema type not supported
+    // Enum schema can not support by kafka-avro-serializer
+    private static final String USER_SCHEMA = "{\n"
+        + "  \"type\": \"record\",\n"
+        + "  \"name\": \"ExampleRecord\",\n"
+        + "  \"fields\": [\n"
+        + "    {\"name\": \"stringField\", \"type\": \"string\"},\n"
+        + "    {\"name\": \"intField\", \"type\": \"int\"},\n"
+        + "    {\"name\": \"longField\", \"type\": \"long\"},\n"
+        + "    {\"name\": \"floatField\", \"type\": \"float\"},\n"
+        + "    {\"name\": \"doubleField\", \"type\": \"double\"},\n"
+        + "    {\"name\": \"booleanField\", \"type\": \"boolean\"},\n"
+//        + "    {\"name\": \"enumField\", \"type\": {\"type\": \"enum\", \"name\": \"ExampleEnum\", "
+//        + "\"symbols\": [\"FOO\", \"BAR\"]}},\n"
+        + "    {\"name\": \"bytesField\", \"type\": \"bytes\"},\n"
+        + "    {\"name\": \"arrayField\", \"type\": {\"type\": \"array\", \"items\": \"string\"}},\n"
+        + "    {\"name\": \"mapField\", \"type\": {\"type\": \"map\", \"values\": \"int\"}},\n"
+        + "    {\"name\": \"recordField\", \"type\": {\n"
+        + "      \"type\": \"record\",\n"
+        + "      \"name\": \"NestedRecord\",\n"
+        + "      \"fields\": [\n"
+        + "        {\"name\": \"nestedField\", \"type\": \"string\"}\n"
+        + "      ]\n"
+        + "    }},\n"
+        + "    {\"name\": \"unionField\", \"type\": [\"string\", \"int\"]}\n"
+        + "  ]\n"
+        + "}";
+
+    private static final Schema FIXED_SCHEMA = new Schema.Parser().parse(USER_SCHEMA);
+
+
+    private List<IndexedRecord> createAvroRecord(int numberOfMessages) {
+
+        List<IndexedRecord> records = new ArrayList<>(numberOfMessages);
+        Random random = new Random();
+        for (int i = 0; i < numberOfMessages; i++) {
+            GenericRecord record = new GenericData.Record(FIXED_SCHEMA);
+
+            // Randomly populate fields with different Avro types
+            record.put("stringField", "string_" + i);
+            record.put("intField", random.nextInt());
+            record.put("longField", random.nextLong());
+            record.put("floatField", random.nextFloat());
+            record.put("doubleField", random.nextDouble());
+            record.put("booleanField", random.nextBoolean());
+//            record.put("enumField", new GenericData.EnumSymbol(schema.getField("enumField").schema(),
+//                random.nextBoolean() ? "FOO" : "BAR"));
+            record.put("bytesField", ByteBuffer.wrap(new byte[]{(byte) random.nextInt(256),
+                (byte) random.nextInt(256)}));
+            record.put("arrayField", Arrays.asList("array_" + random.nextInt(100),
+                "array_" + random.nextInt(100)));
+
+            Map<String, Integer> mapField = new HashMap<>();
+            mapField.put("key_" + random.nextInt(100), random.nextInt());
+            mapField.put("key_" + random.nextInt(100), random.nextInt());
+            record.put("mapField", mapField);
+
+            GenericRecord nestedRecord = new GenericData.Record(FIXED_SCHEMA.getField("recordField").schema());
+            nestedRecord.put("nestedField", "nested_" + random.nextInt(10000));
+            record.put("recordField", nestedRecord);
+
+            // Union field with a mix of string and int
+            if (random.nextBoolean()) {
+                record.put("unionField", "union_" + random.nextInt(10000));
+            } else {
+                record.put("unionField", random.nextInt(10000));
+            }
+
+            // Append the record to the list
+            records.add(record);
+        }
+        return records;
+    }
+
+    @SuppressWarnings("unchecked")
+    public byte[] serialize(Object value) throws Exception {
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        BinaryEncoder encoder = EncoderFactory.get().directBinaryEncoder(out, null);
+        DatumWriter writer =  AvroSchemaUtils.getDatumWriter(value, FIXED_SCHEMA, false);
+        writer.write(value, encoder);
+        encoder.flush();
+        byte[] bytes = out.toByteArray();
+        out.close();
+        return bytes;
+    }
+
+    KafkaProducer<Integer, Object> createKafkaProducer(Properties props, String schemaRegistry) {
+        props.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, IntegerSerializer.class);
+        props.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, KafkaAvroSerializer.class);
+        props.put(KafkaAvroSerializerConfig.SCHEMA_REGISTRY_URL_CONFIG, schemaRegistry);
         return new KafkaProducer<>(props);
     }
 
@@ -243,6 +347,13 @@ public class ProducerPerformance {
                 .type(String.class)
                 .metavar("TOPIC")
                 .help("produce messages to this topic");
+
+        parser.addArgument("--registry")
+            .action(store())
+            .required(false)
+            .type(String.class)
+            .metavar("REGISTRY")
+            .help("The schema registry");
 
         parser.addArgument("--num-records")
                 .action(store())

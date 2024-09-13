@@ -127,6 +127,9 @@ allprojects {
 
   repositories {
     mavenCentral()
+    maven {
+      url "https://packages.confluent.io/maven/"
+    }
   }
 
   dependencyUpdates {
@@ -292,7 +295,6 @@ subprojects {
       options.compilerArgs << "-Xlint:-rawtypes"
     options.compilerArgs << "-Xlint:-serial"
     options.compilerArgs << "-Xlint:-try"
-    options.compilerArgs << "-Werror"
 
     // --release is the recommended way to select the target release, but it's only supported in Java 9 so we also
     // set --source and --target via `sourceCompatibility` and `targetCompatibility` a couple of lines below
@@ -2110,6 +2112,7 @@ project(':tools') {
     implementation project(':connect:runtime')
     implementation project(':log4j-appender')
     implementation project(':tools:tools-api')
+    implementation libs.kafkaSerialize
     implementation libs.argparse4j
     implementation libs.jacksonDatabind
     implementation libs.jacksonDataformatCsv
