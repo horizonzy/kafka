@@ -107,7 +107,7 @@ public class ProducerPerformance {
             long startMs = System.currentTimeMillis();
 
             ThroughputThrottler throttler = new ThroughputThrottler(throughput, startMs);
-
+            IndexedRecord avroRecord = createAvroRecord();
             int currentTransactionSize = 0;
             long transactionStartTime = 0;
             for (long i = 0; i < numRecords; i++) {
@@ -117,7 +117,6 @@ public class ProducerPerformance {
                     producer.beginTransaction();
                     transactionStartTime = System.currentTimeMillis();
                 }
-                IndexedRecord avroRecord = createAvroRecord();
                 record = new ProducerRecord<>(topicName, avroRecord);
 
                 long sendStartMs = System.currentTimeMillis();
