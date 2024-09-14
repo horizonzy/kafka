@@ -208,9 +208,9 @@ public class ProducerPerformance {
     private IndexedRecord createAvroRecord() {
         Random random = new Random();
         GenericRecord record = new GenericData.Record(FIXED_SCHEMA);
-
+        String pending = new String(new byte[914]);
         // Randomly populate fields with different Avro types
-        record.put("stringField", "string_" + random.nextInt());
+        record.put("stringField", pending + random.nextInt());
         record.put("intField", random.nextInt());
         record.put("longField", random.nextLong());
         record.put("floatField", random.nextFloat());
