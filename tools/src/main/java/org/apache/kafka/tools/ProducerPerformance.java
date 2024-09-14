@@ -19,6 +19,7 @@ package org.apache.kafka.tools;
 import static net.sourceforge.argparse4j.impl.Arguments.store;
 import static net.sourceforge.argparse4j.impl.Arguments.storeTrue;
 
+import io.confluent.kafka.serializers.AbstractKafkaSchemaSerDeConfig;
 import io.confluent.kafka.serializers.KafkaAvroSerializer;
 import io.confluent.kafka.serializers.KafkaAvroSerializerConfig;
 import java.io.IOException;
@@ -50,6 +51,7 @@ import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.clients.producer.RecordMetadata;
 import org.apache.kafka.common.serialization.IntegerSerializer;
+import org.apache.kafka.common.serialization.Serializer;
 import org.apache.kafka.common.utils.Exit;
 import org.apache.kafka.common.utils.Utils;
 import org.apache.kafka.server.util.ThroughputThrottler;
@@ -60,7 +62,7 @@ public class ProducerPerformance {
         ProducerPerformance perf = new ProducerPerformance();
         perf.start(args);
     }
-    
+
     void start(String[] args) throws Exception {
         ArgumentParser parser = argParser();
 
@@ -90,7 +92,11 @@ public class ProducerPerformance {
 
             Properties props = readProps(producerProps, producerConfig, transactionalId, transactionsEnabled);
 
-            KafkaProducer<Integer, Object> producer = createKafkaProducer(props, schemaRegistry);
+            Serializer valueSerializer = new KafkaAvroSerializer();
+            props.put(KafkaAvroSerializerConfig.SCHEMA_REGISTRY_URL_CONFIG, schemaRegistry);
+            props.put(AbstractKafkaSchemaSerDeConfig.AUTO_REGISTER_SCHEMAS, false);
+            valueSerializer.configure(props, false);
+            KafkaProducer<byte[], byte[]> producer = createKafkaProducer(props);
 
             if (transactionsEnabled)
                 producer.initTransactions();
@@ -102,25 +108,28 @@ public class ProducerPerformance {
 //            }
             // not threadsafe, do not share with other threads
             SplittableRandom random = new SplittableRandom(0);
-            ProducerRecord<Integer, Object> record;
+            ProducerRecord<byte[], byte[]> record;
             stats = new Stats(numRecords, 5000);
             long startMs = System.currentTimeMillis();
 
             ThroughputThrottler throttler = new ThroughputThrottler(throughput, startMs);
             IndexedRecord avroRecord = createAvroRecord();
+            ((KafkaAvroSerializer) valueSerializer).register(topicName + "-value", FIXED_SCHEMA);
+
+            byte[] data = valueSerializer.serialize(topicName, avroRecord);
+            int payloadSize = data.length;
+
             int currentTransactionSize = 0;
             long transactionStartTime = 0;
             for (long i = 0; i < numRecords; i++) {
-
-
                 if (transactionsEnabled && currentTransactionSize == 0) {
                     producer.beginTransaction();
                     transactionStartTime = System.currentTimeMillis();
                 }
-                record = new ProducerRecord<>(topicName, avroRecord);
+                record = new ProducerRecord<>(topicName, data);
 
                 long sendStartMs = System.currentTimeMillis();
-                cb = new PerfCallback(sendStartMs, PAYLOAD_SIZE, stats);
+                cb = new PerfCallback(sendStartMs, payloadSize, stats);
                 producer.send(record, cb);
                 if (i > 0 && i % 10000 == 0) {
                     producer.flush();
@@ -196,8 +205,6 @@ public class ProducerPerformance {
         + "  ]\n"
         + "}";
 
-    private static final int PAYLOAD_SIZE = 115;;
-
     private static final Schema FIXED_SCHEMA = new Schema.Parser().parse(USER_SCHEMA);
 
 
@@ -237,10 +244,7 @@ public class ProducerPerformance {
         return record;
     }
 
-    KafkaProducer<Integer, Object> createKafkaProducer(Properties props, String schemaRegistry) {
-        props.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, IntegerSerializer.class);
-        props.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, KafkaAvroSerializer.class);
-        props.put(KafkaAvroSerializerConfig.SCHEMA_REGISTRY_URL_CONFIG, schemaRegistry);
+    KafkaProducer<byte[], byte[]> createKafkaProducer(Properties props) {
         return new KafkaProducer<>(props);
     }
 
@@ -260,7 +264,7 @@ public class ProducerPerformance {
         }
         return payload;
     }
-    
+
     static Properties readProps(List<String> producerProps, String producerConfig, String transactionalId,
             boolean transactionsEnabled) throws IOException {
         Properties props = new Properties();
