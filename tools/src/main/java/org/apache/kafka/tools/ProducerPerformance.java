@@ -19,7 +19,6 @@ package org.apache.kafka.tools;
 import static net.sourceforge.argparse4j.impl.Arguments.store;
 import static net.sourceforge.argparse4j.impl.Arguments.storeTrue;
 
-import io.confluent.kafka.serializers.AbstractKafkaSchemaSerDeConfig;
 import io.confluent.kafka.serializers.KafkaAvroSerializer;
 import io.confluent.kafka.serializers.KafkaAvroSerializerConfig;
 import java.io.IOException;
@@ -50,7 +49,6 @@ import org.apache.kafka.clients.producer.KafkaProducer;
 import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.clients.producer.RecordMetadata;
-import org.apache.kafka.common.serialization.IntegerSerializer;
 import org.apache.kafka.common.serialization.Serializer;
 import org.apache.kafka.common.utils.Exit;
 import org.apache.kafka.common.utils.Utils;
@@ -63,6 +61,7 @@ public class ProducerPerformance {
         perf.start(args);
     }
 
+    @SuppressWarnings("unchecked")
     void start(String[] args) throws Exception {
         ArgumentParser parser = argParser();
 
@@ -94,7 +93,6 @@ public class ProducerPerformance {
 
             Serializer valueSerializer = new KafkaAvroSerializer();
             props.put(KafkaAvroSerializerConfig.SCHEMA_REGISTRY_URL_CONFIG, schemaRegistry);
-            props.put(AbstractKafkaSchemaSerDeConfig.AUTO_REGISTER_SCHEMAS, false);
             valueSerializer.configure(props, false);
             KafkaProducer<byte[], byte[]> producer = createKafkaProducer(props);
 
@@ -114,7 +112,6 @@ public class ProducerPerformance {
 
             ThroughputThrottler throttler = new ThroughputThrottler(throughput, startMs);
             IndexedRecord avroRecord = createAvroRecord();
-            ((KafkaAvroSerializer) valueSerializer).register(topicName + "-value", FIXED_SCHEMA);
 
             byte[] data = valueSerializer.serialize(topicName, avroRecord);
             int payloadSize = data.length;
