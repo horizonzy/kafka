@@ -197,7 +197,7 @@ public class ProducerPerformance {
         + "  ]\n"
         + "}";
 
-    private static final int PAYLOAD_SIZE = 105;;
+    private static final int PAYLOAD_SIZE = 115;;
 
     private static final Schema FIXED_SCHEMA = new Schema.Parser().parse(USER_SCHEMA);
 

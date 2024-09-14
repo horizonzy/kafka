@@ -52,7 +52,7 @@ import org.slf4j.LoggerFactory;
 public class ConsumerPerformance {
     private static final Logger LOG = LoggerFactory.getLogger(ConsumerPerformance.class);
     private static final Random RND = new Random();
-    private static final int PAYLOAD_SIZE = 105;
+    private static final int PAYLOAD_SIZE = 115;
 
     public static void main(String[] args) {
         try {
