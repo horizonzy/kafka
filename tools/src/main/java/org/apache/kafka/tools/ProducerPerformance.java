@@ -71,7 +71,7 @@ public class ProducerPerformance {
             /* parse args */
             String topicName = res.getString("topic");
             String schemaRegistry = res.getString("registry");
-            boolean isAvroRecord = res.getBoolean("avro");
+            boolean isAvroRecord = true;
             long numRecords = res.getLong("numRecords");
             Integer recordSize = res.getInt("recordSize");
             int throughput = res.getInt("throughput");
@@ -221,7 +221,11 @@ public class ProducerPerformance {
         record.put("booleanField", random.nextBoolean());
 //        record.put("enumField", new GenericData.EnumSymbol(schema.getField("enumField").schema(),
 //            random.nextBoolean() ? "FOO" : "BAR"));
-        record.put("bytesField", ByteBuffer.wrap(new byte[byteSize]));
+        byte[] bytesData = new byte[byteSize];
+        for (int i = 0; i < byteSize; i++) {
+            bytesData[i] = (byte) random.nextInt();
+        }
+        record.put("bytesField", ByteBuffer.wrap(bytesData));
         record.put("arrayField", Arrays.asList("array_" + random.nextInt(100),
             "array_" + random.nextInt(100)));
 
