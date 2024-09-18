@@ -71,7 +71,7 @@ public class ConsumerPerformance {
             props.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, KafkaAvroDeserializer.class);
             props.put(KafkaAvroSerializerConfig.SCHEMA_REGISTRY_URL_CONFIG, options.schemaRegistry());
 
-            KafkaConsumer<Integer, Object> consumer = new KafkaConsumer<>(props);
+            KafkaConsumer<byte[], Object> consumer = new KafkaConsumer<>(props);
             long bytesRead = 0L;
             long messagesRead = 0L;
             long lastBytesRead = 0L;
@@ -125,7 +125,7 @@ public class ConsumerPerformance {
             System.out.printf("time, threadId, data.consumed.in.MB, MB.sec, data.consumed.in.nMsg, nMsg.sec%s%n", newFieldsInHeader);
     }
 
-    private static void consume(KafkaConsumer<Integer, Object> consumer,
+    private static void consume(KafkaConsumer<byte[], Object> consumer,
                                 ConsumerPerfOptions options,
                                 AtomicLong totalMessagesRead,
                                 AtomicLong totalBytesRead,
@@ -150,11 +150,11 @@ public class ConsumerPerformance {
         long lastConsumedTimeMs = currentTimeMs;
 
         while (messagesRead < numMessages && currentTimeMs - lastConsumedTimeMs <= recordFetchTimeoutMs) {
-            ConsumerRecords<Integer, Object> records = consumer.poll(Duration.ofMillis(100));
+            ConsumerRecords<byte[], Object> records = consumer.poll(Duration.ofMillis(100));
             currentTimeMs = System.currentTimeMillis();
             if (!records.isEmpty())
                 lastConsumedTimeMs = currentTimeMs;
-            for (ConsumerRecord<Integer, Object> record : records) {
+            for (ConsumerRecord<byte[], Object> record : records) {
                 messagesRead += 1;
                 if (record.key() != null)
                     bytesRead += 4;

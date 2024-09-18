@@ -62,7 +62,7 @@ public class ProducerPerformance {
     }
 
     @SuppressWarnings("unchecked")
-    void start(String[] args) throws Exception {
+    void start(String[] args) throws IOException {
         ArgumentParser parser = argParser();
 
         try {
@@ -71,6 +71,7 @@ public class ProducerPerformance {
             /* parse args */
             String topicName = res.getString("topic");
             String schemaRegistry = res.getString("registry");
+            boolean isAvroRecord = res.getBoolean("avro");
             long numRecords = res.getLong("numRecords");
             Integer recordSize = res.getInt("recordSize");
             int throughput = res.getInt("throughput");
@@ -85,25 +86,32 @@ public class ProducerPerformance {
             // since default value gets printed with the help text, we are escaping \n there and replacing it with correct value here.
             String payloadDelimiter = res.getString("payloadDelimiter").equals("\\n") ? "\n" : res.getString("payloadDelimiter");
 
+
             if (producerProps == null && producerConfig == null) {
                 throw new ArgumentParserException("Either --producer-props or --producer.config must be specified.", parser);
             }
-
             Properties props = readProps(producerProps, producerConfig, transactionalId, transactionsEnabled);
-
-            Serializer valueSerializer = new KafkaAvroSerializer();
-            props.put(KafkaAvroSerializerConfig.SCHEMA_REGISTRY_URL_CONFIG, schemaRegistry);
-            valueSerializer.configure(props, false);
             KafkaProducer<byte[], byte[]> producer = createKafkaProducer(props);
+
+            byte[] payload = null;
+            List<byte[]> payloadByteList = null;
+            if (isAvroRecord) {
+                Serializer valueSerializer = new KafkaAvroSerializer();
+                props.put(KafkaAvroSerializerConfig.SCHEMA_REGISTRY_URL_CONFIG, schemaRegistry);
+                valueSerializer.configure(props, false);
+                IndexedRecord avroRecord = createAvroRecord(recordSize);
+                payload = valueSerializer.serialize(topicName, avroRecord);
+            } else {
+                payloadByteList = readPayloadFile(payloadFilePath, payloadDelimiter);
+                /* setup perf test */
+                if (recordSize != null) {
+                    payload = new byte[recordSize];
+                }
+            }
 
             if (transactionsEnabled)
                 producer.initTransactions();
 
-            /* setup perf test */
-//            byte[] payload = null;
-//            if (recordSize != null) {
-//                payload = new byte[recordSize];
-//            }
             // not threadsafe, do not share with other threads
             SplittableRandom random = new SplittableRandom(0);
             ProducerRecord<byte[], byte[]> record;
@@ -111,10 +119,6 @@ public class ProducerPerformance {
             long startMs = System.currentTimeMillis();
 
             ThroughputThrottler throttler = new ThroughputThrottler(throughput, startMs);
-            IndexedRecord avroRecord = createAvroRecord();
-
-            byte[] data = valueSerializer.serialize(topicName, avroRecord);
-            int payloadSize = data.length;
 
             int currentTransactionSize = 0;
             long transactionStartTime = 0;
@@ -123,14 +127,14 @@ public class ProducerPerformance {
                     producer.beginTransaction();
                     transactionStartTime = System.currentTimeMillis();
                 }
-                record = new ProducerRecord<>(topicName, data);
+                if (!isAvroRecord) {
+                    payload = generateRandomPayload(recordSize, payloadByteList, payload, random);
+                }
+                record = new ProducerRecord<>(topicName, payload);
 
                 long sendStartMs = System.currentTimeMillis();
-                cb = new PerfCallback(sendStartMs, payloadSize, stats);
+                cb = new PerfCallback(sendStartMs, payload.length, stats);
                 producer.send(record, cb);
-                if (i > 0 && i % 10000 == 0) {
-                    producer.flush();
-                }
                 currentTransactionSize++;
                 if (transactionsEnabled && transactionDurationMs <= (sendStartMs - transactionStartTime)) {
                     producer.commitTransaction();
@@ -205,7 +209,7 @@ public class ProducerPerformance {
     private static final Schema FIXED_SCHEMA = new Schema.Parser().parse(USER_SCHEMA);
 
 
-    private IndexedRecord createAvroRecord() {
+    private IndexedRecord createAvroRecord(int byteSize) {
         Random random = new Random();
         GenericRecord record = new GenericData.Record(FIXED_SCHEMA);
         String pending = new String(new byte[914]);
@@ -218,8 +222,7 @@ public class ProducerPerformance {
         record.put("booleanField", random.nextBoolean());
 //        record.put("enumField", new GenericData.EnumSymbol(schema.getField("enumField").schema(),
 //            random.nextBoolean() ? "FOO" : "BAR"));
-        record.put("bytesField", ByteBuffer.wrap(new byte[]{(byte) random.nextInt(256),
-            (byte) random.nextInt(256)}));
+        record.put("bytesField", ByteBuffer.wrap(new byte[byteSize]));
         record.put("arrayField", Arrays.asList("array_" + random.nextInt(100),
             "array_" + random.nextInt(100)));
 
@@ -330,6 +333,12 @@ public class ProducerPerformance {
             .type(String.class)
             .metavar("REGISTRY")
             .help("The schema registry");
+
+        parser.addArgument("--avro")
+            .action(storeTrue())
+            .type(Boolean.class)
+            .metavar("AVRO")
+            .help("The record type");
 
         parser.addArgument("--num-records")
                 .action(store())
