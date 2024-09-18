@@ -16,6 +16,20 @@
  */
 package org.apache.kafka.tools;
 
+import static joptsimple.util.RegexMatcher.regex;
+
+import io.confluent.kafka.serializers.KafkaAvroDeserializer;
+import io.confluent.kafka.serializers.KafkaAvroSerializerConfig;
+import java.io.IOException;
+import java.text.SimpleDateFormat;
+import java.time.Duration;
+import java.util.Collection;
+import java.util.Collections;
+import java.util.Map;
+import java.util.Properties;
+import java.util.Random;
+import java.util.Set;
+import java.util.concurrent.atomic.AtomicLong;
 import joptsimple.OptionException;
 import joptsimple.OptionSpec;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
@@ -27,6 +41,7 @@ import org.apache.kafka.common.Metric;
 import org.apache.kafka.common.MetricName;
 import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.serialization.ByteArrayDeserializer;
+import org.apache.kafka.common.serialization.StringDeserializer;
 import org.apache.kafka.common.utils.Exit;
 import org.apache.kafka.common.utils.Utils;
 import org.apache.kafka.server.util.CommandDefaultOptions;
@@ -34,22 +49,10 @@ import org.apache.kafka.server.util.CommandLineUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.io.IOException;
-import java.text.SimpleDateFormat;
-import java.time.Duration;
-import java.util.Collection;
-import java.util.Collections;
-import java.util.Map;
-import java.util.Properties;
-import java.util.Random;
-import java.util.Set;
-import java.util.concurrent.atomic.AtomicLong;
-
-import static joptsimple.util.RegexMatcher.regex;
-
 public class ConsumerPerformance {
     private static final Logger LOG = LoggerFactory.getLogger(ConsumerPerformance.class);
     private static final Random RND = new Random();
+    private static final int PAYLOAD_SIZE = 115;
 
     public static void main(String[] args) {
         try {
@@ -63,7 +66,12 @@ public class ConsumerPerformance {
             if (!options.hideHeader())
                 printHeader(options.showDetailedStats());
 
-            KafkaConsumer<byte[], byte[]> consumer = new KafkaConsumer<>(options.props());
+            Properties props = options.props();
+            props.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class);
+            props.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, KafkaAvroDeserializer.class);
+            props.put(KafkaAvroSerializerConfig.SCHEMA_REGISTRY_URL_CONFIG, options.schemaRegistry());
+
+            KafkaConsumer<byte[], Object> consumer = new KafkaConsumer<>(props);
             long bytesRead = 0L;
             long messagesRead = 0L;
             long lastBytesRead = 0L;
@@ -117,7 +125,7 @@ public class ConsumerPerformance {
             System.out.printf("time, threadId, data.consumed.in.MB, MB.sec, data.consumed.in.nMsg, nMsg.sec%s%n", newFieldsInHeader);
     }
 
-    private static void consume(KafkaConsumer<byte[], byte[]> consumer,
+    private static void consume(KafkaConsumer<byte[], Object> consumer,
                                 ConsumerPerfOptions options,
                                 AtomicLong totalMessagesRead,
                                 AtomicLong totalBytesRead,
@@ -142,16 +150,16 @@ public class ConsumerPerformance {
         long lastConsumedTimeMs = currentTimeMs;
 
         while (messagesRead < numMessages && currentTimeMs - lastConsumedTimeMs <= recordFetchTimeoutMs) {
-            ConsumerRecords<byte[], byte[]> records = consumer.poll(Duration.ofMillis(100));
+            ConsumerRecords<byte[], Object> records = consumer.poll(Duration.ofMillis(100));
             currentTimeMs = System.currentTimeMillis();
             if (!records.isEmpty())
                 lastConsumedTimeMs = currentTimeMs;
-            for (ConsumerRecord<byte[], byte[]> record : records) {
+            for (ConsumerRecord<byte[], Object> record : records) {
                 messagesRead += 1;
                 if (record.key() != null)
-                    bytesRead += record.key().length;
+                    bytesRead += 4;
                 if (record.value() != null)
-                    bytesRead += record.value().length;
+                    bytesRead += PAYLOAD_SIZE;
                 if (currentTimeMs - lastReportTimeMs >= reportingIntervalMs) {
                     if (showDetailedStats)
                         printConsumerProgress(0, bytesRead, lastBytesRead, messagesRead, lastMessagesRead,
@@ -246,6 +254,7 @@ public class ConsumerPerformance {
         private final OptionSpec<String> brokerListOpt;
         private final OptionSpec<String> bootstrapServerOpt;
         private final OptionSpec<String> topicOpt;
+        private final OptionSpec<String> schemaRegistryOpt;
         private final OptionSpec<String> groupIdOpt;
         private final OptionSpec<Integer> fetchSizeOpt;
         private final OptionSpec<Void> resetBeginningOffsetOpt;
@@ -275,6 +284,10 @@ public class ConsumerPerformance {
             topicOpt = parser.accepts("topic", "REQUIRED: The topic to consume from.")
                 .withRequiredArg()
                 .describedAs("topic")
+                .ofType(String.class);
+            schemaRegistryOpt = parser.accepts("registry", "REQUIRED: The schema registry.")
+                .withRequiredArg()
+                .describedAs("registry")
                 .ofType(String.class);
             groupIdOpt = parser.accepts("group", "The group id to consume on.")
                 .withRequiredArg()
@@ -378,6 +391,10 @@ public class ConsumerPerformance {
 
         public long numMessages() {
             return options.valueOf(numMessagesOpt);
+        }
+
+        public String schemaRegistry() {
+            return options.valueOf(schemaRegistryOpt);
         }
 
         public long reportingIntervalMs() {

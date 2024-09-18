@@ -102,10 +102,10 @@ public class ProducerPerformanceTest {
         doReturn(producerMock).when(producerPerformanceSpy).createKafkaProducer(any(Properties.class));
 
         String[] args = new String[] {
-            "--topic", "Hello-Kafka", 
-            "--num-records", "5", 
-            "--throughput", "100", 
-            "--record-size", "100", 
+            "--topic", "Hello-Kafka",
+            "--num-records", "5",
+            "--throughput", "100",
+            "--record-size", "100",
             "--producer-props", "bootstrap.servers=localhost:9000"};
         producerPerformanceSpy.start(args);
         verify(producerMock, times(5)).send(any(), any());

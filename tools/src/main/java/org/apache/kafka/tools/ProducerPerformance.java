@@ -19,31 +19,40 @@ package org.apache.kafka.tools;
 import static net.sourceforge.argparse4j.impl.Arguments.store;
 import static net.sourceforge.argparse4j.impl.Arguments.storeTrue;
 
+import io.confluent.kafka.serializers.KafkaAvroSerializer;
+import io.confluent.kafka.serializers.KafkaAvroSerializerConfig;
 import java.io.IOException;
+import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
-import java.util.List;
-import java.util.Properties;
 import java.util.Arrays;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Properties;
+import java.util.Random;
 import java.util.SplittableRandom;
-
+import net.sourceforge.argparse4j.ArgumentParsers;
+import net.sourceforge.argparse4j.inf.ArgumentParser;
+import net.sourceforge.argparse4j.inf.ArgumentParserException;
 import net.sourceforge.argparse4j.inf.MutuallyExclusiveGroup;
+import net.sourceforge.argparse4j.inf.Namespace;
+import org.apache.avro.Schema;
+import org.apache.avro.generic.GenericData;
+import org.apache.avro.generic.GenericRecord;
+import org.apache.avro.generic.IndexedRecord;
 import org.apache.kafka.clients.producer.Callback;
 import org.apache.kafka.clients.producer.KafkaProducer;
 import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.clients.producer.RecordMetadata;
-
-import net.sourceforge.argparse4j.ArgumentParsers;
-import net.sourceforge.argparse4j.inf.ArgumentParser;
-import net.sourceforge.argparse4j.inf.ArgumentParserException;
-import net.sourceforge.argparse4j.inf.Namespace;
+import org.apache.kafka.common.serialization.Serializer;
 import org.apache.kafka.common.utils.Exit;
-import org.apache.kafka.server.util.ThroughputThrottler;
 import org.apache.kafka.common.utils.Utils;
+import org.apache.kafka.server.util.ThroughputThrottler;
 
 public class ProducerPerformance {
 
@@ -51,7 +60,8 @@ public class ProducerPerformance {
         ProducerPerformance perf = new ProducerPerformance();
         perf.start(args);
     }
-    
+
+    @SuppressWarnings("unchecked")
     void start(String[] args) throws IOException {
         ArgumentParser parser = argParser();
 
@@ -60,6 +70,8 @@ public class ProducerPerformance {
 
             /* parse args */
             String topicName = res.getString("topic");
+            String schemaRegistry = res.getString("registry");
+            boolean isAvroRecord = true;
             long numRecords = res.getLong("numRecords");
             Integer recordSize = res.getInt("recordSize");
             int throughput = res.getInt("throughput");
@@ -74,24 +86,32 @@ public class ProducerPerformance {
             // since default value gets printed with the help text, we are escaping \n there and replacing it with correct value here.
             String payloadDelimiter = res.getString("payloadDelimiter").equals("\\n") ? "\n" : res.getString("payloadDelimiter");
 
+
             if (producerProps == null && producerConfig == null) {
                 throw new ArgumentParserException("Either --producer-props or --producer.config must be specified.", parser);
             }
-
-            List<byte[]> payloadByteList = readPayloadFile(payloadFilePath, payloadDelimiter);
-
             Properties props = readProps(producerProps, producerConfig, transactionalId, transactionsEnabled);
-
             KafkaProducer<byte[], byte[]> producer = createKafkaProducer(props);
+
+            byte[] payload = null;
+            List<byte[]> payloadByteList = null;
+            if (isAvroRecord) {
+                Serializer valueSerializer = new KafkaAvroSerializer();
+                props.put(KafkaAvroSerializerConfig.SCHEMA_REGISTRY_URL_CONFIG, schemaRegistry);
+                valueSerializer.configure(props, false);
+                IndexedRecord avroRecord = createAvroRecord(recordSize);
+                payload = valueSerializer.serialize(topicName, avroRecord);
+            } else {
+                payloadByteList = readPayloadFile(payloadFilePath, payloadDelimiter);
+                /* setup perf test */
+                if (recordSize != null) {
+                    payload = new byte[recordSize];
+                }
+            }
 
             if (transactionsEnabled)
                 producer.initTransactions();
 
-            /* setup perf test */
-            byte[] payload = null;
-            if (recordSize != null) {
-                payload = new byte[recordSize];
-            }
             // not threadsafe, do not share with other threads
             SplittableRandom random = new SplittableRandom(0);
             ProducerRecord<byte[], byte[]> record;
@@ -103,20 +123,18 @@ public class ProducerPerformance {
             int currentTransactionSize = 0;
             long transactionStartTime = 0;
             for (long i = 0; i < numRecords; i++) {
-
-                payload = generateRandomPayload(recordSize, payloadByteList, payload, random);
-
                 if (transactionsEnabled && currentTransactionSize == 0) {
                     producer.beginTransaction();
                     transactionStartTime = System.currentTimeMillis();
                 }
-
+                if (!isAvroRecord) {
+                    payload = generateRandomPayload(recordSize, payloadByteList, payload, random);
+                }
                 record = new ProducerRecord<>(topicName, payload);
 
                 long sendStartMs = System.currentTimeMillis();
                 cb = new PerfCallback(sendStartMs, payload.length, stats);
                 producer.send(record, cb);
-
                 currentTransactionSize++;
                 if (transactionsEnabled && transactionDurationMs <= (sendStartMs - transactionStartTime)) {
                     producer.commitTransaction();
@@ -158,7 +176,75 @@ public class ProducerPerformance {
                 Exit.exit(1);
             }
         }
+    }
 
+    // fixed schema type not supported
+    // Enum schema can not support by kafka-avro-serializer
+    private static final String USER_SCHEMA = "{\n"
+        + "  \"type\": \"record\",\n"
+        + "  \"name\": \"ExampleRecord\",\n"
+        + "  \"fields\": [\n"
+        + "    {\"name\": \"stringField\", \"type\": \"string\"},\n"
+        + "    {\"name\": \"intField\", \"type\": \"int\"},\n"
+        + "    {\"name\": \"longField\", \"type\": \"long\"},\n"
+        + "    {\"name\": \"floatField\", \"type\": \"float\"},\n"
+        + "    {\"name\": \"doubleField\", \"type\": \"double\"},\n"
+        + "    {\"name\": \"booleanField\", \"type\": \"boolean\"},\n"
+//        + "    {\"name\": \"enumField\", \"type\": {\"type\": \"enum\", \"name\": \"ExampleEnum\", "
+//        + "\"symbols\": [\"FOO\", \"BAR\"]}},\n"
+        + "    {\"name\": \"bytesField\", \"type\": \"bytes\"},\n"
+        + "    {\"name\": \"arrayField\", \"type\": {\"type\": \"array\", \"items\": \"string\"}},\n"
+        + "    {\"name\": \"mapField\", \"type\": {\"type\": \"map\", \"values\": \"int\"}},\n"
+        + "    {\"name\": \"recordField\", \"type\": {\n"
+        + "      \"type\": \"record\",\n"
+        + "      \"name\": \"NestedRecord\",\n"
+        + "      \"fields\": [\n"
+        + "        {\"name\": \"nestedField\", \"type\": \"string\"}\n"
+        + "      ]\n"
+        + "    }},\n"
+        + "    {\"name\": \"unionField\", \"type\": [\"string\", \"int\"]}\n"
+        + "  ]\n"
+        + "}";
+
+    private static final Schema FIXED_SCHEMA = new Schema.Parser().parse(USER_SCHEMA);
+
+
+    private IndexedRecord createAvroRecord(int byteSize) {
+        Random random = new Random();
+        GenericRecord record = new GenericData.Record(FIXED_SCHEMA);
+        // Randomly populate fields with different Avro types
+        record.put("stringField", "string_" + random.nextInt());
+        record.put("intField", random.nextInt());
+        record.put("longField", random.nextLong());
+        record.put("floatField", random.nextFloat());
+        record.put("doubleField", random.nextDouble());
+        record.put("booleanField", random.nextBoolean());
+//        record.put("enumField", new GenericData.EnumSymbol(schema.getField("enumField").schema(),
+//            random.nextBoolean() ? "FOO" : "BAR"));
+        byte[] bytesData = new byte[byteSize];
+        for (int i = 0; i < byteSize; i++) {
+            bytesData[i] = (byte) random.nextInt();
+        }
+        record.put("bytesField", ByteBuffer.wrap(bytesData));
+        record.put("arrayField", Arrays.asList("array_" + random.nextInt(100),
+            "array_" + random.nextInt(100)));
+
+        Map<String, Integer> mapField = new HashMap<>();
+        mapField.put("key_" + random.nextInt(100), random.nextInt());
+        mapField.put("key_" + random.nextInt(100), random.nextInt());
+        record.put("mapField", mapField);
+
+        GenericRecord nestedRecord = new GenericData.Record(FIXED_SCHEMA.getField("recordField").schema());
+        nestedRecord.put("nestedField", "nested_" + random.nextInt(10000));
+        record.put("recordField", nestedRecord);
+
+        // Union field with a mix of string and int
+        if (random.nextBoolean()) {
+            record.put("unionField", "union_" + random.nextInt(10000));
+        } else {
+            record.put("unionField", random.nextInt(10000));
+        }
+        return record;
     }
 
     KafkaProducer<byte[], byte[]> createKafkaProducer(Properties props) {
@@ -181,7 +267,7 @@ public class ProducerPerformance {
         }
         return payload;
     }
-    
+
     static Properties readProps(List<String> producerProps, String producerConfig, String transactionalId,
             boolean transactionsEnabled) throws IOException {
         Properties props = new Properties();
@@ -243,6 +329,19 @@ public class ProducerPerformance {
                 .type(String.class)
                 .metavar("TOPIC")
                 .help("produce messages to this topic");
+
+        parser.addArgument("--registry")
+            .action(store())
+            .required(true)
+            .type(String.class)
+            .metavar("REGISTRY")
+            .help("The schema registry");
+
+        parser.addArgument("--avro")
+            .action(storeTrue())
+            .type(Boolean.class)
+            .metavar("AVRO")
+            .help("The record type");
 
         parser.addArgument("--num-records")
                 .action(store())
